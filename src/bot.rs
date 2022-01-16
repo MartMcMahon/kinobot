@@ -10,50 +10,16 @@ use serenity::{
     prelude::TypeMapKey,
     utils::MessageBuilder,
 };
-use std::{env, num::ParseIntError, sync::Arc};
+use std::{env, sync::Arc};
 use tokio::fs;
 
 const MAIN_DATA_PATH: &str = "./list.json";
 
-#[derive(Debug, Deserialize)]
-struct ImdbEntry {
-    tconst: String,
-    title_type: String,
-    primary_title: String,
-    original_title: String,
-    is_adult: bool,
-    start_year: u32,
-    end_year: String,
-    runtime_minutes: String,
-    genres: String,
-}
-impl ImdbEntry {
-    fn from_items(items: Vec<&str>) -> Option<ImdbEntry> {
-        if items.len() == 9 {
-            let year = items[5].parse::<u32>();
-            Some(ImdbEntry {
-                tconst: items[0].to_string(),
-                title_type: items[1].to_string(),
-                primary_title: items[2].to_string(),
-                original_title: items[3].to_string(),
-                is_adult: items[4] == "1",
-                start_year: match year {
-                    Ok(y) => y,
-                    _ => 0,
-                },
-                end_year: items[6].to_string(),
-                runtime_minutes: items[7].to_string(),
-                genres: items[8].to_string(),
-            })
-        } else {
-            None
-        }
-    }
-}
+mod types;
 
 struct Db;
 impl TypeMapKey for Db {
-    type Value = Vec<ImdbEntry>;
+    type Value = Vec<types::TitleEntry>;
 }
 
 #[derive(Default)]
@@ -131,14 +97,24 @@ async fn list(ctx: &Context, msg: &Message) -> Result<(), CommandError> {
 #[command]
 #[min_args(1)]
 async fn lookup(ctx: &Context, msg: &Message, mut args: Args) -> Result<(), CommandError> {
-    let title = args.single::<String>().unwrap();
+    println!("{}", args.remaining());
+    let len = args.len();
+    let mut title_words: Vec<String> = Vec::new();
+    for arg in 0..len {
+        println!("arg {:#?}", arg);
+        title_words.push(args.single().unwrap());
+    }
+    let title = title_words.join(" ").to_lowercase();
+
     let typing = msg.channel_id.start_typing(&ctx.http).unwrap();
 
     let lock = ctx.data.read().await;
     let imdb_movies = lock.get::<Db>().unwrap();
     let mut res = None;
     for entry in imdb_movies {
-        if entry.primary_title == title || entry.original_title == title {
+        if entry.primary_title.to_lowercase() == title
+            || entry.original_title.to_lowercase() == title
+        {
             res = Some(entry.clone());
             break;
         }
@@ -188,19 +164,22 @@ async fn main() {
         .expect("Error creating client");
 
     // load movie database
-    let mut imdb_movies: Vec<ImdbEntry> = Vec::new();
-    let f_lines = fs::read_to_string("./title.basics.tsv").await.unwrap();
-    let lines: Vec<&str> = f_lines.split('\n').collect();
-    let l = lines.len() as f32;
-    let end = (l / 8.).floor() as usize;
-    for (i, line) in lines[1..].iter().enumerate() {
-        println!("{}/{}", i, l);
-        let cells: Vec<&str> = line.split('\t').collect();
-        if let Some(i) = ImdbEntry::from_items(cells) {
-            imdb_movies.push(i);
-        }
-    }
-    println!("done parsing all {:?} movies", imdb_movies.len());
+    // let mut imdb_movies: Vec<types::TitleEntry> = Vec::new();
+    // let f_lines = fs::read_to_string("./title.basics.tsv").await.unwrap();
+    // let lines: Vec<&str> = f_lines.split('\n').collect();
+    // let l = lines.len() as f32;
+    // let end = (l / 8.).floor() as usize;
+    // for (i, line) in lines[1..end].iter().enumerate() {
+    //     println!("{}/{}", i, l);
+    //     let cells: Vec<&str> = line.split('\t').collect();
+    //     if let Some(i) = types::TitleEntry::from_items(cells) {
+    //         imdb_movies.push(i);
+    //     }
+    // }
+    // load from "movies.json"
+    let films_json = fs::read_to_string("./movies.json").await.unwrap();
+    let imdb_movies: Vec<types::TitleEntry> =
+        serde_json::from_str(films_json.as_str()).expect("error parsing movies.json");
     {
         let mut data = client.data.write().await;
         // load initial state from file
