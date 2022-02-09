@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 // https://stackoverflow.com/questions/53866508/how-to-make-a-public-struct-where-all-fields-are-public-without-repeating-pub
@@ -10,7 +12,7 @@ use serde::{Deserialize, Serialize};
 //     }
 // }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TitleEntry {
     pub tconst: String,
     pub title_type: String,
@@ -46,6 +48,7 @@ impl TitleEntry {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct NameEntry {
     pub nconst: String,
     pub primaryName: String,
@@ -54,7 +57,20 @@ pub struct NameEntry {
     pub primaryProfession: Vec<String>,
     pub knownForTitles: Vec<String>,
 }
+// impl NameEntry {
+//     pub fn from_items(items: Vec<&str>) -> Option<NameEntry> {
+//         if items.len() == 6 {
+//             Some(NameEntry {
+//                 nconst:
+//             })
 
+// } else {
+//     None
+// }
+// }
+// }
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CrewEntry {
     pub tconst: String,
     pub directors: Vec<String>,

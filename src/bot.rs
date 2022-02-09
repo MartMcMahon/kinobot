@@ -10,16 +10,18 @@ use serenity::{
     prelude::TypeMapKey,
     utils::MessageBuilder,
 };
-use std::{env, sync::Arc};
+use std::{collections::HashMap, env, sync::Arc};
 use tokio::fs;
 
 const MAIN_DATA_PATH: &str = "./list.json";
 
 mod types;
+use types::*;
+mod tests;
 
 struct Db;
 impl TypeMapKey for Db {
-    type Value = Vec<types::TitleEntry>;
+    type Value = Vec<TitleEntry>;
 }
 
 #[derive(Default)]
@@ -27,10 +29,18 @@ struct Handler;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct JsonData {
-    watchlist: Vec<String>,
+    watchlist: Vec<WatchlistMovie>,
 }
 impl TypeMapKey for JsonData {
     type Value = Arc<JsonData>;
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct WatchlistMovie {
+    title: String,
+    year: String,
+    director: String,
+    added_by: String,
 }
 
 #[async_trait]
@@ -60,86 +70,91 @@ async fn ping(ctx: &Context, msg: &Message) -> Result<(), CommandError> {
 #[command]
 #[min_args(1)]
 async fn add(ctx: &Context, msg: &Message, mut args: Args) -> Result<(), CommandError> {
-    let first = args.single::<String>().unwrap();
-    msg.reply(&ctx.http, "added".to_owned()).await.unwrap();
-    println!("added {}", first);
+    let title = title_from_args(args);
+
     let read_lock = ctx.data.read().await;
     let parsed_json = Arc::clone(read_lock.get::<JsonData>().unwrap());
     drop(read_lock);
     let mut write_lock = ctx.data.write().await;
 
+    println!("adding {}", &title);
     let mut new_list = parsed_json.watchlist.clone();
-    new_list.push(first);
+    new_list.push(WatchlistMovie {
+        title,
+        year: "".to_string(),
+        director: "".to_string(),
+        added_by: "".to_string(),
+    });
 
     write_lock.insert::<JsonData>(Arc::new(JsonData {
-        watchlist: new_list,
+        watchlist: new_list.clone(),
     }));
     drop(write_lock);
+
+    msg.reply(&ctx.http, "added".to_owned()).await.unwrap();
+
+    write_list_to_disk(JsonData {
+        watchlist: new_list,
+    })
+    .await;
+
     Ok(())
 }
 
 #[command]
 async fn list(ctx: &Context, msg: &Message) -> Result<(), CommandError> {
-    let lock = ctx.data.read().await;
-    let parsed_json = lock.get::<JsonData>().unwrap();
-    println!("list: {}", parsed_json.watchlist.join(", "));
-    msg.channel_id
-        .say(
-            &ctx.http,
-            MessageBuilder::new().push_codeblock(parsed_json.watchlist.join("\n"), None),
-        )
-        .await
-        .expect("error saying");
+    //     let lock = ctx.data.read().await;
+    //     let parsed_json = lock.get::<JsonData>().unwrap();
+    //     println!("list: {}", parsed_json.watchlist.join(", "));
+    //     msg.channel_id
+    //         .say(
+    //             &ctx.http,
+    //             MessageBuilder::new().push_codeblock(parsed_json.watchlist.join("\n"), None),
+    //         )
+    //         .await
+    //         .expect("error saying");
 
     Ok(())
 }
 
+// async fn crew_from_tconst(ctx: &Context, tconst: String) -> Option<CrewEntry> {
+//     let crew_data_str = fs::read_to_string("./crews.json")
+//         .await
+//         .expect("error reading crews.json");
+//     let data: CrewMap = serde_json::from_str(&crew_data_str).expect("error parsing crew json");
+//     data.get(&tconst)
+// }
+
 #[command]
 #[min_args(1)]
-async fn lookup(ctx: &Context, msg: &Message, mut args: Args) -> Result<(), CommandError> {
-    println!("{}", args.remaining());
-    let len = args.len();
-    let mut title_words: Vec<String> = Vec::new();
-    for arg in 0..len {
-        println!("arg {:#?}", arg);
-        title_words.push(args.single().unwrap());
-    }
-    let title = title_words.join(" ").to_lowercase();
+async fn lookup(ctx: &Context, msg: &Message, args: Args) -> Result<(), CommandError> {
+    let title = title_from_args(args);
 
     let typing = msg.channel_id.start_typing(&ctx.http).unwrap();
 
-    let lock = ctx.data.read().await;
-    let imdb_movies = lock.get::<Db>().unwrap();
-    let mut res = None;
-    for entry in imdb_movies {
-        if entry.primary_title.to_lowercase() == title
-            || entry.original_title.to_lowercase() == title
-        {
-            res = Some(entry.clone());
-            break;
-        }
-    }
-    match res {
-        Some(entry) => {
-            let director = "some person";
-            msg.reply(
-                &ctx.http,
-                format!(
-                    "{} ({}) -- directed by {}",
-                    entry.original_title, entry.start_year, director
-                ),
-            )
-            .await
-            .unwrap();
-        }
-        None => {
-            msg.reply(&ctx.http, format!("couldn't find {}", title))
-                .await
-                .unwrap();
-        }
-    }
-    drop(lock);
-    typing.stop();
+    let imdb_entry = imdb_find_title(ctx, title.clone()).await;
+    // let crew_entry = imdb_find_crew(ctx, )
+
+    // match imdb_entry {
+    //     Some(entry) => {
+    //         let directors = entry.directors.join(", and ");
+    //         msg.reply(
+    //             &ctx.http,
+    //             format!(
+    //                 "{} ({}) -- directed by {}",
+    //                 entry.original_title, entry.start_year, director
+    //             ),
+    //         )
+    //         .await
+    //         .unwrap();
+    //     }
+    //     None => {
+    //         msg.reply(&ctx.http, format!("couldn't find {}", title))
+    //             .await
+    //             .unwrap();
+    //     }
+    // }
+    // typing.stop();
 
     Ok(())
 }
@@ -163,22 +178,8 @@ async fn main() {
         .await
         .expect("Error creating client");
 
-    // load movie database
-    // let mut imdb_movies: Vec<types::TitleEntry> = Vec::new();
-    // let f_lines = fs::read_to_string("./title.basics.tsv").await.unwrap();
-    // let lines: Vec<&str> = f_lines.split('\n').collect();
-    // let l = lines.len() as f32;
-    // let end = (l / 8.).floor() as usize;
-    // for (i, line) in lines[1..end].iter().enumerate() {
-    //     println!("{}/{}", i, l);
-    //     let cells: Vec<&str> = line.split('\t').collect();
-    //     if let Some(i) = types::TitleEntry::from_items(cells) {
-    //         imdb_movies.push(i);
-    //     }
-    // }
-    // load from "movies.json"
     let films_json = fs::read_to_string("./movies.json").await.unwrap();
-    let imdb_movies: Vec<types::TitleEntry> =
+    let imdb_movies: Vec<TitleEntry> =
         serde_json::from_str(films_json.as_str()).expect("error parsing movies.json");
     {
         let mut data = client.data.write().await;
@@ -200,15 +201,49 @@ async fn read_data() -> JsonData {
 
     let data: JsonData = serde_json::from_str(x.as_str()).expect("error parsing json");
 
-    println!("{}", data.watchlist.join(", "));
+    let x = data
+        .watchlist
+        .iter()
+        .map(|movie| movie.title.as_str())
+        .collect::<String>();
+
+    println!("{}", x);
     data
 }
 
-async fn write_to_file(data: JsonData) {
+async fn write_list_to_disk(data: JsonData) {
     fs::write(
         MAIN_DATA_PATH,
         serde_json::to_string(&data).expect("error stringifying json"),
     )
     .await
     .unwrap();
+}
+
+fn title_from_args(mut args: Args) -> String {
+    println!("{}", args.remaining());
+    let len = args.len();
+    let mut title_words: Vec<String> = Vec::new();
+    for arg in 0..len {
+        println!("arg {:#?}", arg);
+        title_words.push(args.single().unwrap());
+    }
+    let title = title_words.join(" ").to_lowercase();
+    title
+}
+
+async fn imdb_find_title(ctx: &Context, title: String) -> Option<TitleEntry> {
+    let lock = ctx.data.read().await;
+    let imdb_movies = lock.get::<Db>().unwrap();
+    let mut res = None;
+    for entry in imdb_movies {
+        if entry.primary_title.to_lowercase() == title
+            || entry.original_title.to_lowercase() == title
+        {
+            res = Some(entry.clone());
+            break;
+        }
+    }
+    drop(lock);
+    res
 }
